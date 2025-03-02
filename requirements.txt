@@ -1,0 +1,11 @@
+torch
+torchvision
+einops
+matplotlib
+tqdm
+wandb
+torchastic
+numpy
+tensorboard
+torch_tb_profiler
+safetensors
