@@ -24,7 +24,7 @@ import wandb
 
 from src.dataloaders.dataloader import TextImageDataset
 
-from model.ae import AutoEncoder
+from src.model.ae import AutoEncoder
 
 import time
 
@@ -37,19 +37,14 @@ class TrainingConfig:
     weight_decay: float
     warmup_steps: int
     change_layer_every: int
-    trained_blocks: int
     save_every: int
     save_folder: str
+    validate_every: int
     wandb_key: Optional[str] = None
     wandb_project: Optional[str] = None
     wandb_run: Optional[str] = None
     wandb_entity: Optional[str] = None
 
-
-@dataclass
-class InferenceConfig:
-    inference_every: int
-    inference_folder: str
 
 @dataclass
 class DataloaderConfig:
@@ -189,19 +184,16 @@ def load_config_from_json(filepath: str):
         return json.load(json_file)
 
 
-
 def train_ae(rank, world_size, debug=False):
     # Initialize distributed training
     if not debug:
         setup_distributed(rank, world_size)
 
-    config_data = load_config_from_json("training_config_lumina.json")
+    config_data = load_config_from_json("training_config.json")
 
     training_config = TrainingConfig(**config_data["training"])
-    inference_config = InferenceConfig(**config_data["inference"])
     dataloader_config = DataloaderConfig(**config_data["dataloader"])
     model_config = ModelConfig(**config_data["model"])
-
 
     # wandb logging
     if training_config.wandb_project is not None and rank == 0:
@@ -219,18 +211,16 @@ def train_ae(rank, world_size, debug=False):
     dump_dict_to_json(
         config_data, f"{training_config.save_folder}/training_config.json"
     )
-
-    os.makedirs(inference_config.inference_folder, exist_ok=True)
     # global training RNG
     torch.manual_seed(training_config.master_seed)
     random.seed(training_config.master_seed)
 
-
-    model = AutoEncoder(model_config)
+    model = AutoEncoder(**asdict(model_config))
     if model_config.resume_checkpoint:
         model.load_state_dict(torch.load(model_config.resume_checkpoint))
 
     model.train()
+    model.to(torch.bfloat16)
     model.to(rank)
 
     dataset = TextImageDataset(
@@ -250,6 +240,7 @@ def train_ae(rank, world_size, debug=False):
     # split train validation set
     train_set_size = int(len(dataset) * (1 - dataloader_config.val_percentage))
     val_set_size = len(dataset) - train_set_size
+    dummy_collate_fn = dataset.dummy_collate_fn
     dataset, val_dataset = random_split(dataset, [train_set_size, val_set_size])
 
     # validation set
@@ -260,9 +251,8 @@ def train_ae(rank, world_size, debug=False):
         num_workers=dataloader_config.num_workers,
         prefetch_factor=dataloader_config.prefetch_factor,
         pin_memory=True,
-        collate_fn=dataset.dummy_collate_fn,
+        collate_fn=dummy_collate_fn,
     )
-    
 
     optimizer = None
     scheduler = None
@@ -278,7 +268,7 @@ def train_ae(rank, world_size, debug=False):
             num_workers=dataloader_config.num_workers,
             prefetch_factor=dataloader_config.prefetch_factor,
             pin_memory=True,
-            collate_fn=dataset.dummy_collate_fn,
+            collate_fn=dummy_collate_fn,
         )
         for counter, data in tqdm(
             enumerate(dataloader),
@@ -320,19 +310,17 @@ def train_ae(rank, world_size, debug=False):
                 with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
 
                     recon = model(images[tmb_i * mb : tmb_i * mb + mb])
-                    
-                    loss = (
-                        F.mse_loss(
-                            recon,
-                            images[tmb_i * mb : tmb_i * mb + mb],
-                        )
-                        / (dataloader_config.batch_size / mb)
-                    )
+
+                    loss = F.mse_loss(
+                        recon,
+                        images[tmb_i * mb : tmb_i * mb + mb],
+                    ) / (dataloader_config.batch_size / mb)
 
                 loss.backward()
-                loss_log.append(loss.detach().clone() * (dataloader_config.batch_size / mb))
+                loss_log.append(
+                    loss.detach().clone() * (dataloader_config.batch_size / mb)
+                )
             loss_log = sum(loss_log) / len(loss_log)
-
 
             optimizer_state_to(optimizer, rank)
             StochasticAccumulator.reassign_grad_buffer(model)
@@ -351,20 +339,26 @@ def train_ae(rank, world_size, debug=False):
             optimizer_state_to(optimizer, "cpu")
             torch.cuda.empty_cache()
 
-            # do validation loss 
-            if counter % inference_config.inference_every == 0 and rank == 0:
+            # do validation loss
+            if counter % training_config.validate_every == 0 and rank == 0:
+
+                # store validation loss
+                val_loss_log = []
+                preview = {}
+                # loop through all validation set and get the validation loss and first mini batch sample from rank 0
                 for val_data in tqdm(
                     val_dataloader,
                     total=len(val_dataset),
                     desc=f"validating, Rank {rank}",
                     position=rank,
                 ):
-                    with torch.no_grad(), torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                    with torch.no_grad(), torch.autocast(
+                        device_type="cuda", dtype=torch.bfloat16
+                    ):
 
                         val_images, _, _ = val_data[0]
                         val_images = val_images.to(rank, non_blocking=True)
                         mb = training_config.train_minibatch
-                        val_loss_log = []
 
                         for tmb_i in tqdm(
                             range(dataloader_config.batch_size // mb // world_size),
@@ -373,18 +367,39 @@ def train_ae(rank, world_size, debug=False):
                         ):
 
                             val_recon = model(val_images[tmb_i * mb : tmb_i * mb + mb])
-                            val_loss = (
-                                F.mse_loss(
-                                    val_recon,
-                                    val_images[tmb_i * mb : tmb_i * mb + mb],
-                                )
-                                / (dataloader_config.batch_size / mb)
+                            val_loss = F.mse_loss(
+                                val_recon,
+                                val_images[tmb_i * mb : tmb_i * mb + mb],
+                            ) / (dataloader_config.batch_size / mb)
+                            val_loss_log.append(
+                                val_loss * (dataloader_config.batch_size / mb)
                             )
-                            val_loss_log.append(val_loss * (dataloader_config.batch_size / mb))
 
-                        val_loss_log = sum(val_loss_log) / len(val_loss_log)
-            
+                            # store first micro batch as preview if there's no preview image
+                            if tmb_i == 0 and not preview:
+                                preview["recon"] = val_recon.clone()
+                                preview["ground_truth"] = val_images[
+                                    tmb_i * mb : tmb_i * mb + mb
+                                ]
+                                grid_preview = torch.cat(
+                                    [preview["recon"], preview["ground_truth"]], dim=0
+                                )
+                                grid = make_grid(
+                                    grid_preview.clip(-1, 1),
+                                    nrow=8,
+                                    padding=2,
+                                    normalize=True,
+                                )
+                                image_folder = f"{training_config.save_folder}/preview"
+                                os.makedirs(image_folder, exist_ok=True)
+                                save_image(
+                                    grid,
+                                    f"{image_folder}/{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.png",
+                                )
 
+                # aggregate the loss
+                with torch.no_grad():
+                    val_loss_log = sum(val_loss_log) / len(val_loss_log)
 
             if (counter + 1) % training_config.save_every == 0 and rank == 0:
                 model_filename = f"{training_config.save_folder}/{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.pth"
@@ -396,7 +411,7 @@ def train_ae(rank, world_size, debug=False):
             if not debug:
                 dist.barrier()
 
-       # save final model
+        # save final model
         if rank == 0:
             model_filename = f"{training_config.save_folder}/{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.pth"
             torch.save(

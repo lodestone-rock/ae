@@ -1,0 +1,39 @@
+{
+    "training": {
+        "master_seed": 0,
+        "train_minibatch": 32,
+        "lr": 1e-04,
+        "weight_decay": 0.0,
+        "warmup_steps": 5,
+        "change_layer_every": 50,
+        "save_every": 5,
+        "save_folder": "testing",
+        "wandb_key": null,
+        "wandb_project": null,
+        "wandb_run": "chroma",
+        "wandb_entity": null,
+        "validate_every": 5
+    },
+    "dataloader": {
+        "batch_size": 64,
+        "jsonl_metadata_path": "tags_data.jsonl",
+        "image_folder_path": "furry_50k_4o/images",
+        "base_resolution": [
+            128
+        ],
+        "resolution_step": 64,
+        "num_workers": 2,
+        "prefetch_factor": 2,
+        "ratio_cutoff": 2.0,
+        "thread_per_worker": 4,
+        "val_percentage": 0.0002
+    },
+    "model": {
+        "pixel_channels": 3,
+        "bottleneck_channels": 4,
+        "up_layer_blocks": [[32, 10], [64, 15], [96, 20], [128, 20]],
+        "down_layer_blocks": [[128, 20], [96, 20], [64, 15], [32, 10]],
+        "act_fn": "sin",
+        "resume_checkpoint": null
+    }
+}
