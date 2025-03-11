@@ -184,6 +184,29 @@ def load_config_from_json(filepath: str):
         return json.load(json_file)
 
 
+def random_crop(image, crop_size=128):
+    """Randomly crop a `crop_size x crop_size` region from the image."""
+    _, _, h, w = image.shape
+    top = torch.randint(0, h - crop_size + 1, (1,)).item()
+    left = torch.randint(0, w - crop_size + 1, (1,)).item()
+    return image[:, :, top : top + crop_size, left : left + crop_size]
+
+
+def random_augment(image, latent):
+    """Apply the same random augmentation (90-degree rotation and flip) to both image and latent."""
+    k = torch.randint(0, 4, (1,)).item()  # Random 90-degree rotation (0, 90, 180, 270 degrees)
+    flip = torch.randint(0, 2, (1,)).item()  # Random horizontal flip
+
+    image = torch.rot90(image, k, dims=[-2, -1])
+    latent = torch.rot90(latent, k, dims=[-2, -1])
+
+    if flip:
+        image = torch.flip(image, dims=[-1])
+        latent = torch.flip(latent, dims=[-1])
+
+    return image, latent
+
+
 def train_ae(rank, world_size, debug=False):
     # Initialize distributed training
     if not debug:
@@ -309,11 +332,21 @@ def train_ae(rank, world_size, debug=False):
                 # do this inside for loops!
                 with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
 
-                    recon = model(images[tmb_i * mb : tmb_i * mb + mb])
+                    images_cropped = random_crop(images[tmb_i * mb : tmb_i * mb + mb], crop_size=128)
+                    latent = model.encode(images_cropped)
+
+                    # zero out latent dim to create variable compression ratio
+                    latent_channel_size =  latent.shape[1]
+                    masked_channel = torch.randint(1, latent_channel_size, [1])
+                    latent[:,masked_channel:] = 0
+                    # Apply the same augmentation to both the cropped image and the latent
+                    images_aug, latent_aug = random_augment(images_cropped, latent)
+
+                    recon = model.decode(latent_aug)
 
                     loss = F.mse_loss(
                         recon,
-                        images[tmb_i * mb : tmb_i * mb + mb],
+                        images_aug,
                     ) / (dataloader_config.batch_size / mb)
 
                 loss.backward()
@@ -365,11 +398,11 @@ def train_ae(rank, world_size, debug=False):
                             desc=f"minibatch validation, Rank {rank}",
                             position=rank,
                         ):
-
-                            val_recon = model(val_images[tmb_i * mb : tmb_i * mb + mb])
+                            val_images_cropped = random_crop(val_images[tmb_i * mb : tmb_i * mb + mb], crop_size=128)
+                            val_recon = model(val_images_cropped)
                             val_loss = F.mse_loss(
                                 val_recon,
-                                val_images[tmb_i * mb : tmb_i * mb + mb],
+                                val_images_cropped,
                             ) / (dataloader_config.batch_size / mb)
                             val_loss_log.append(
                                 val_loss * (dataloader_config.batch_size / mb)
@@ -378,9 +411,7 @@ def train_ae(rank, world_size, debug=False):
                             # store first micro batch as preview if there's no preview image
                             if tmb_i == 0 and not preview:
                                 preview["recon"] = val_recon.clone()
-                                preview["ground_truth"] = val_images[
-                                    tmb_i * mb : tmb_i * mb + mb
-                                ]
+                                preview["ground_truth"] = val_images_cropped
                                 grid_preview = torch.cat(
                                     [preview["recon"], preview["ground_truth"]], dim=0
                                 )

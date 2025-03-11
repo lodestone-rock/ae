@@ -1,7 +1,7 @@
 {
     "training": {
         "master_seed": 0,
-        "train_minibatch": 32,
+        "train_minibatch": 4,
         "lr": 1e-04,
         "weight_decay": 0.0,
         "warmup_steps": 5,
@@ -19,7 +19,9 @@
         "jsonl_metadata_path": "tags_data.jsonl",
         "image_folder_path": "furry_50k_4o/images",
         "base_resolution": [
-            128
+            256,
+            512,
+            1024
         ],
         "resolution_step": 64,
         "num_workers": 2,
