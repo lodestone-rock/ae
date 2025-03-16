@@ -1,25 +1,24 @@
 {
     "training": {
         "master_seed": 0,
-        "train_minibatch": 4,
+        "train_minibatch": 32,
         "lr": 1e-04,
         "weight_decay": 0.0,
-        "warmup_steps": 5,
-        "change_layer_every": 50,
-        "save_every": 5,
-        "save_folder": "testing",
+        "warmup_steps": 50,
+        "change_layer_every": 1000,
+        "save_every": 100,
+        "save_folder": "stubby",
         "wandb_key": null,
-        "wandb_project": null,
-        "wandb_run": "chroma",
+        "wandb_project": "versatile AE",
+        "wandb_run": "stubby",
         "wandb_entity": null,
-        "validate_every": 5
+        "validate_every": 100
     },
     "dataloader": {
-        "batch_size": 64,
-        "jsonl_metadata_path": "tags_data.jsonl",
+        "batch_size": 32,
+        "jsonl_metadata_path": "all_rounder.jsonl",
         "image_folder_path": "furry_50k_4o/images",
         "base_resolution": [
-            256,
             512,
             1024
         ],
@@ -27,15 +26,15 @@
         "num_workers": 2,
         "prefetch_factor": 2,
         "ratio_cutoff": 2.0,
-        "thread_per_worker": 4,
-        "val_percentage": 0.0002
+        "thread_per_worker": 8,
+        "val_percentage": 0.0000002
     },
     "model": {
         "pixel_channels": 3,
-        "bottleneck_channels": 4,
-        "up_layer_blocks": [[32, 10], [64, 15], [96, 20], [128, 20]],
-        "down_layer_blocks": [[128, 20], [96, 20], [64, 15], [32, 10]],
-        "act_fn": "sin",
+        "bottleneck_channels": 64,
+        "up_layer_blocks": [[512, 2], [320, 2], [256, 2], [192, 2], [128, 2]],
+        "down_layer_blocks": [[128, 2], [192, 2], [256, 2], [320, 2], [512, 2]],
+        "act_fn": "silu",
         "resume_checkpoint": null
     }
 }

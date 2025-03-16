@@ -398,7 +398,7 @@ def train_ae(rank, world_size, debug=False):
                             desc=f"minibatch validation, Rank {rank}",
                             position=rank,
                         ):
-                            val_images_cropped = random_crop(val_images[tmb_i * mb : tmb_i * mb + mb], crop_size=128)
+                            val_images_cropped = random_crop(val_images[tmb_i * mb : tmb_i * mb + mb], crop_size=256)
                             val_recon = model(val_images_cropped)
                             val_loss = F.mse_loss(
                                 val_recon,
@@ -422,11 +422,15 @@ def train_ae(rank, world_size, debug=False):
                                     normalize=True,
                                 )
                                 image_folder = f"{training_config.save_folder}/preview"
+                                file_path = f"{image_folder}/{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.png"
                                 os.makedirs(image_folder, exist_ok=True)
                                 save_image(
                                     grid,
-                                    f"{image_folder}/{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.png",
+                                    file_path,
                                 )
+                                # upload preview to wandb
+                                if training_config.wandb_project is not None:
+                                    wandb.log({"example_image": wandb.Image(file_path)})
 
                 # aggregate the loss
                 with torch.no_grad():
