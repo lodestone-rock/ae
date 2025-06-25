@@ -17,7 +17,7 @@ from torchvision.utils import save_image
 from torchvision.utils import save_image, make_grid
 from torch.utils.data import DataLoader, random_split
 
-from torchastic import Compass, StochasticAccumulator
+from torchastic import AdamW, StochasticAccumulator
 import random
 
 from aim import Run, Image as AimImage
@@ -43,6 +43,7 @@ class TrainingConfig:
     save_folder: str
     validate_every: int
     training_res: int
+    equivariance_enforcement_ratio: int
     aim_path: Optional[str] = None
     aim_experiment_name: Optional[str] = None
     aim_hash: Optional[str] = None
@@ -106,7 +107,7 @@ def init_optimizer(model, trained_layer_keywords, lr, wd, warmup_steps):
     # return hooks so it can be released later on
     hooks = StochasticAccumulator.assign_hooks(model)
     # init optimizer
-    optimizer = Compass(
+    optimizer = AdamW(
         [
             {
                 "params": [
@@ -126,7 +127,7 @@ def init_optimizer(model, trained_layer_keywords, lr, wd, warmup_steps):
         ],
         lr=lr,
         weight_decay=wd,
-        betas=(0.9, 0.999),
+        betas=(0.9, 0.99),
     )
 
     scheduler = torch.optim.lr_scheduler.LinearLR(
@@ -187,12 +188,60 @@ def load_config_from_json(filepath: str):
         return json.load(json_file)
 
 
-def random_crop(image, crop_size=128):
-    """Randomly crop a `crop_size x crop_size` region from the image."""
-    _, _, h, w = image.shape
-    top = torch.randint(0, h - crop_size + 1, (1,)).item()
-    left = torch.randint(0, w - crop_size + 1, (1,)).item()
-    return image[:, :, top : top + crop_size, left : left + crop_size]
+def transform(image, latent):
+    """
+    Apply random equivariant transformations to tensor.
+    
+    Args:
+        image: Input tensor [N, C, H, W]
+        
+    Returns:
+        Transformed tensor [N, C, H', W'] (size may vary)
+    """
+
+    i_n, i_c, i_h, i_w = image.shape
+    l_n, l_c, l_h, l_w = latent.shape
+    
+    compression_level = i_h / l_h
+    # Discrete random scale (0.5image to 2image)
+    scale = random.uniform(0.5, 2.0)
+    if scale != 1.0:
+        h, w = image.shape[-2:]
+        new_h, new_w = int(h * scale), int(w * scale)
+        new_h = int(round(new_h / compression_level) * compression_level)
+        new_w = int(round(new_w / compression_level) * compression_level)
+
+        mode = random.choice(['bilinear', 'bicubic', 'nearest'])
+        image = F.interpolate(image, size=(new_h, new_w), mode=mode, align_corners=False if mode != 'nearest' else None)
+        latent = F.interpolate(latent, size=(int(new_h/compression_level), int(new_w/compression_level)), mode=mode, align_corners=False if mode != 'nearest' else None)
+    
+    # Random flip
+    flip = random.choice(['h', 'v', 'none'])
+    if flip == 'h':
+        image = torch.flip(image, dims=[3])
+        latent = torch.flip(latent, dims=[3])
+        # print("flip h")
+    elif flip == 'v':
+        image = torch.flip(image, dims=[2])
+        latent = torch.flip(latent, dims=[2])
+        # print("flip v")
+    
+    # Random rotation (90° increments)
+    rot = random.choice([0, 90, 180, 270])
+    if rot == 90:
+        image = torch.flip(image.transpose(-2, -1), dims=[-1])
+        latent = torch.flip(latent.transpose(-2, -1), dims=[-1])
+        # print("rot 90")
+    elif rot == 180:
+        image = torch.flip(torch.flip(image, dims=[-2]), dims=[-1])
+        latent = torch.flip(torch.flip(latent, dims=[-2]), dims=[-1])
+        # print("rot 180")
+    elif rot == 270:
+        image = torch.flip(image.transpose(-2, -1), dims=[-2])
+        latent = torch.flip(latent.transpose(-2, -1), dims=[-2])
+        # print("rot 270")
+    
+    return image, latent
 
 
 def random_augment(image):
@@ -222,7 +271,7 @@ def train_ae(rank, world_size, debug=False):
     # aim logging
     if training_config.aim_path is not None and rank == 0:
         # current_datetime = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        run = Run(repo=training_config.aim_path, run_hash=training_config.aim_hash, experiment=training_config.aim_experiment_name)
+        run = Run(repo=training_config.aim_path, run_hash=training_config.aim_hash, experiment=training_config.aim_experiment_name, force_resume=True)
 
         hparams = config_data.copy()
         hparams["training"]['aim_path'] = None
@@ -331,12 +380,18 @@ def train_ae(rank, world_size, debug=False):
             ):
                 # do this inside for loops!
                 with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                    shunt_model = torch.rand(()) > 0.5
+                    # we still use random augmentation to artificially increase the dataset size
 
-                    images_cropped = random_crop(images[tmb_i * mb : tmb_i * mb + mb], crop_size=training_config.training_res)
-                    images_aug = random_augment(images_cropped)
-                    latent = model.encode(images_aug)
+                    images_aug = random_augment(images[tmb_i * mb : tmb_i * mb + mb])
+                    latent = model.encode(images_aug, skip_last_downscale=shunt_model)
 
-                    recon = model.decode(latent)
+                    # transform the latent and transform the target for equivariance
+                    equivariance = torch.rand(()) < training_config.equivariance_enforcement_ratio
+                    if equivariance:
+                        images_aug, latent = transform(images_aug, latent) 
+
+                    recon = model.decode(latent, skip_second_upscale=shunt_model)
 
                     loss = F.l1_loss(
                         recon,
@@ -393,8 +448,9 @@ def train_ae(rank, world_size, debug=False):
                             desc=f"minibatch validation, Rank {rank}",
                             position=rank,
                         ):
-                            val_images_cropped = random_crop(val_images[tmb_i * mb : tmb_i * mb + mb], crop_size=256)
+                            val_images_cropped = val_images[tmb_i * mb : tmb_i * mb + mb] # random_crop(val_images[tmb_i * mb : tmb_i * mb + mb], crop_size=256)
                             val_recon = model(val_images_cropped)
+                            val_recon_shunt = model.decode(model.encode(val_images_cropped, skip_last_downscale=True), skip_second_upscale=True)
                             val_loss = F.mse_loss(
                                 val_recon,
                                 val_images_cropped,
@@ -406,13 +462,14 @@ def train_ae(rank, world_size, debug=False):
                             # store first micro batch as preview if there's no preview image
                             if tmb_i == 0 and not preview:
                                 preview["recon"] = val_recon.clone()
+                                preview["recon_shunt"] = val_recon_shunt.clone()
                                 preview["ground_truth"] = val_images_cropped
                                 grid_preview = torch.cat(
-                                    [preview["recon"], preview["ground_truth"]], dim=0
+                                    [preview["recon_shunt"], preview["recon"], preview["ground_truth"]], dim=0
                                 )
                                 grid = make_grid(
                                     grid_preview.clip(-1, 1),
-                                    nrow=8,
+                                    nrow=4,
                                     padding=2,
                                     normalize=True,
                                 )

@@ -27,9 +27,15 @@ class SoftClamp(nn.Module):
             return soft_clamp(x, self.scale, self.alpha, self.shift)
 
 
-@torch.compile
+# @torch.compile
+# def pointwise_gating(x, act_fn):
+#     lin, gate = rearrange(x, "n (g c) h w -> g n c h w", g=2)
+#     return lin * act_fn(gate)
+
 def pointwise_gating(x, act_fn):
-    lin, gate = rearrange(x, "n (g c) h w -> g n c h w", g=2)
+    # x shape: (n, 2*c, h, w)
+    # Split along channel dimension into two equal parts
+    lin, gate = torch.chunk(x, chunks=2, dim=1)
     return lin * act_fn(gate)
 
 
@@ -204,11 +210,15 @@ class Encoder(nn.Module):
         nn.init.zeros_(self.in_conv.bias)
         nn.init.zeros_(self.out_conv.bias)
 
-    def forward(self, x, checkpoint=True):
+    def forward(self, x, checkpoint=True, skip_last_downscale=False):
         x = self.in_conv(x)
+        res_blocks_count = len(self.res_blocks)
+
         for i, res_blocks in enumerate(self.res_blocks):
-            if i != 0:  # no downscale first input
-                x = self.down_blocks[i - 1](x)
+            is_last = i == res_blocks_count - 1
+            if i != 0:
+                if not (skip_last_downscale and is_last):
+                    x = self.down_blocks[i - 1](x)
 
             for resnet in res_blocks:
                 if checkpoint:
@@ -266,12 +276,14 @@ class Decoder(nn.Module):
         nn.init.zeros_(self.in_conv.bias)
         nn.init.zeros_(self.out_conv.bias)
 
-    def forward(self, x, checkpoint=True):
-        # checkpointing is defaulted to true
+    def forward(self, x, checkpoint=True, skip_second_upscale=False):
         x = self.in_conv(x)
+
         for i, res_blocks in enumerate(self.res_blocks):
-            if i != 0:  # no downscale first input
-                x = self.up_blocks[i - 1](x)
+            if i != 0:
+                is_second = i == 1
+                if not (skip_second_upscale and is_second):
+                    x = self.up_blocks[i - 1](x)
 
             for resnet in res_blocks:
                 if checkpoint:
@@ -321,11 +333,11 @@ class AutoEncoder(nn.Module):
             activation_functions[act_fn],
         )
 
-    def encode(self, x, checkpoint=True):
-        return self.encoder(x, checkpoint)
+    def encode(self, x, checkpoint=True, skip_last_downscale=False):
+        return self.encoder(x, checkpoint, skip_last_downscale)
 
-    def decode(self, x, checkpoint=True):
-        return self.decoder(x, checkpoint)
+    def decode(self, x, checkpoint=True, skip_second_upscale=False):
+        return self.decoder(x, checkpoint, skip_second_upscale)
 
     def forward(self, x, checkpoint=True):
         x = self.encode(x, checkpoint)

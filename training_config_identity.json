@@ -1,26 +1,26 @@
 {
     "training": {
-        "master_seed": 0,
-        "train_minibatch": 32,
-        "lr": 1e-04,
+        "master_seed": 564863538977,
+        "train_minibatch": 4,
+        "lr": 5e-05,
         "weight_decay": 0.0,
         "warmup_steps": 50,
         "change_layer_every": 1000,
         "save_every": 100,
-        "save_folder": "identity_ae",
-        "aim_path": "./aim",
-        "aim_experiment_name": "identity_ae",
+        "save_folder": "identity_ae_64_eq_from_32_2",
+        "aim_path": null,
+        "aim_experiment_name": "identity_ae_64_eq_from_32_2",
         "aim_hash": null,
-        "aim_steps": 0,
+        "aim_steps": 48784,
         "validate_every": 100,
-        "training_res": 256
+        "training_res": 1024,
+        "equivariance_enforcement_ratio": 0.3
     },
     "dataloader": {
-        "batch_size": 32,
-        "jsonl_metadata_path": "tags_data.jsonl",
-        "image_folder_path": "furry_50k_4o/images",
+        "batch_size": 256,
+        "jsonl_metadata_path": "all_rounder.jsonl",
+        "image_folder_path": "",
         "base_resolution": [
-            512,
             1024
         ],
         "resolution_step": 64,
@@ -28,14 +28,64 @@
         "prefetch_factor": 2,
         "ratio_cutoff": 2.0,
         "thread_per_worker": 8,
-        "val_percentage": 0.0000002
+        "val_percentage": 2e-07
     },
     "model": {
         "pixel_channels": 3,
-        "bottleneck_channels": 32,
-        "down_layer_blocks": [[32, 10], [64, 15], [128, 20], [256, 20], [512, 20], [512, 20]],
-        "up_layer_blocks": [[512, 20], [512, 20], [256, 20], [128, 20], [64, 15], [32, 10]], 
+        "bottleneck_channels": 64,
+        "down_layer_blocks": [
+            [
+                32,
+                10
+            ],
+            [
+                64,
+                15
+            ],
+            [
+                128,
+                20
+            ],
+            [
+                256,
+                20
+            ],
+            [
+                512,
+                20
+            ],
+            [
+                512,
+                20
+            ]
+        ],
+        "up_layer_blocks": [
+            [
+                512,
+                20
+            ],
+            [
+                512,
+                20
+            ],
+            [
+                256,
+                20
+            ],
+            [
+                128,
+                20
+            ],
+            [
+                64,
+                15
+            ],
+            [
+                32,
+                10
+            ]
+        ],
         "act_fn": "silu",
-        "resume_checkpoint": null
+        "resume_checkpoint": "2025-06-21_01-53-50.pth"
     }
 }
