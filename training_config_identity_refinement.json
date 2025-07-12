@@ -1,0 +1,65 @@
+{
+    "training": {
+        "master_seed": 564863537,
+        "train_minibatch": 8,
+        "lr": 5e-04,
+        "weight_decay": 0.0,
+        "warmup_steps": 50,
+        "change_layer_every": 1000,
+        "save_every": 20,
+        "save_folder": "identity_ae_64_eq_from_32_GAN",
+        "aim_path": null,
+        "aim_experiment_name": "identity_ae_64_eq_from_32_GAN",
+        "aim_hash": null,
+        "aim_steps": 0,
+        "validate_every": 20,
+        "training_res": 1024,
+        "equivariance_enforcement_ratio": 0.3,
+        "gan_loss_weight": 0.1
+    },
+    "dataloader": {
+        "batch_size": 256,
+        "jsonl_metadata_path": "fast_training_weighted_blackblaze.jsonl",
+        "image_folder_path": "",
+        "base_resolution": [
+            512
+        ],
+        "resolution_step": 64,
+        "num_workers": 3,
+        "prefetch_factor": 20,
+        "ratio_cutoff": 2.0,
+        "thread_per_worker": 10,
+        "val_percentage": 2e-07
+    },
+    "model": {
+        "pixel_channels": 3,
+        "bottleneck_channels": 64,
+        "down_layer_blocks": [
+            [ 32, 10],
+            [ 64, 15],
+            [ 128, 20],
+            [ 256, 20],
+            [ 512, 20],
+            [ 512, 20]
+        ],
+        "up_layer_blocks": [
+            [ 512, 20],
+            [ 512, 20],
+            [ 256, 20],
+            [ 128, 20],
+            [ 64, 15],
+            [ 32, 10]
+        ],
+        "act_fn": "silu",
+        "resume_checkpoint": "2025-06-21_04-10-44.pth"
+    },
+    "disc": {
+        "pixel_channels": 3,
+        "down_layer_blocks": [
+            [ 16, 2],
+            [ 16, 2],
+            [ 32, 2]
+        ],
+        "resume_checkpoint": null
+    }
+}
