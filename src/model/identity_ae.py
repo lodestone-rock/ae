@@ -342,3 +342,51 @@ class AutoEncoder(nn.Module):
     def forward(self, x, checkpoint=True):
         x = self.encode(x, checkpoint)
         return self.decode(x, checkpoint)
+
+
+class CEAutoEncoder(nn.Module):
+    def __init__(
+        self,
+        pixel_channels=3,
+        bottleneck_channels=4,
+        up_layer_blocks=((32, 2), (64, 2), (128, 2)),
+        down_layer_blocks=((32, 2), (64, 2), (128, 2)),
+        act_fn="sin",
+        **kwargs
+    ):
+        super(CEAutoEncoder, self).__init__()
+
+        activation_functions = {
+            "relu": F.relu,
+            "leaky_relu": F.leaky_relu,
+            "sigmoid": F.sigmoid,
+            "tanh": F.tanh,
+            "elu": F.elu,
+            "selu": F.selu,
+            "gelu": F.gelu,
+            "silu": F.silu,
+            "sin": torch.sin,
+        }
+
+        self.encoder = Encoder(
+            pixel_channels,
+            bottleneck_channels,
+            down_layer_blocks,
+            activation_functions[act_fn],
+        )
+        self.decoder = Decoder(
+            bottleneck_channels,
+            pixel_channels*256,
+            up_layer_blocks,
+            activation_functions[act_fn],
+        )
+
+    def encode(self, x, checkpoint=True, skip_last_downscale=False):
+        return self.encoder(x, checkpoint, skip_last_downscale)
+
+    def decode(self, x, checkpoint=True, skip_second_upscale=False):
+        return self.decoder(x, checkpoint, skip_second_upscale)
+
+    def forward(self, x, checkpoint=True):
+        x = self.encode(x, checkpoint)
+        return self.decode(x, checkpoint)

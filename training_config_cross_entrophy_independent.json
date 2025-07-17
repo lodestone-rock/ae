@@ -1,0 +1,95 @@
+{
+    "training": {
+        "master_seed": 564863538,
+        "train_minibatch": 1,
+        "lr": 1e-04,
+        "weight_decay": 0.0,
+        "warmup_steps": 50,
+        "change_layer_every": 1000,
+        "save_every": 100,
+        "save_folder": "identity_ae_64_cross_entrophy_rgb_space",
+        "aim_path": null,
+        "aim_experiment_name": "identity_ae_64_cross_entrophy_rgb_space",
+        "aim_hash": null,
+        "aim_steps": 0,
+        "validate_every": 100,
+        "training_res": 1024,
+        "equivariance_enforcement_ratio": 0.3
+    },
+    "dataloader": {
+        "batch_size": 258,
+        "jsonl_metadata_path": "fast_training_weighted_blackblaze.jsonl",
+        "image_folder_path": "",
+        "base_resolution": [
+            1024
+        ],
+        "resolution_step": 64,
+        "num_workers": 2,
+        "prefetch_factor": 2,
+        "ratio_cutoff": 2.0,
+        "thread_per_worker": 8,
+        "val_percentage": 2e-07
+    },
+    "model": {
+        "sampling_temp": 0.6,
+        "sampling_top_k": 50,
+        "sampling_top_p": 0.9,
+        "pixel_channels": 3,
+        "bottleneck_channels": 64,
+        "down_layer_blocks": [
+            [
+                32,
+                10
+            ],
+            [
+                64,
+                15
+            ],
+            [
+                128,
+                20
+            ],
+            [
+                256,
+                20
+            ],
+            [
+                512,
+                20
+            ],
+            [
+                512,
+                20
+            ]
+        ],
+        "up_layer_blocks": [
+            [
+                512,
+                20
+            ],
+            [
+                512,
+                20
+            ],
+            [
+                256,
+                20
+            ],
+            [
+                128,
+                20
+            ],
+            [
+                64,
+                15
+            ],
+            [
+                32,
+                10
+            ]
+        ],
+        "act_fn": "silu",
+        "resume_checkpoint": "identity_ae_64_cross_entrophy_head_only_fast/2025-07-16_13-38-34.pth",
+        "trainable_keywords": ["decoder"]
+    }
+}
