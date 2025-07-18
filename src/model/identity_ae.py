@@ -59,9 +59,13 @@ class SimpleResNetBlock(nn.Module):
         torch.nn.init.zeros_(self.pointwise.weight)
         torch.nn.init.zeros_(self.pointwise.bias)
 
-    def forward(self, x):
+    def forward(self, x, cond=None):
         skip = x
         x = self.rms_norm(x)
+        
+        # add conditional stuff as a simple addition
+        if cond is not None:
+            x = cond + x
         x = self.conv(x)
         x = pointwise_gating(x, self.act_fn)
         # fused using torch compile
@@ -276,7 +280,7 @@ class Decoder(nn.Module):
         nn.init.zeros_(self.in_conv.bias)
         nn.init.zeros_(self.out_conv.bias)
 
-    def forward(self, x, checkpoint=True, skip_second_upscale=False):
+    def forward(self, x, checkpoint=True, skip_second_upscale=False, logits_only=False):
         x = self.in_conv(x)
 
         for i, res_blocks in enumerate(self.res_blocks):
@@ -291,8 +295,10 @@ class Decoder(nn.Module):
                 else:
                     x = resnet(x)
 
-        x = self.out_norm(x)
-        x = self.out_conv(x)
+        if not logits_only:
+            x = self.out_norm(x)
+            x = self.out_conv(x)
+
         return x
 
 
@@ -390,3 +396,188 @@ class CEAutoEncoder(nn.Module):
     def forward(self, x, checkpoint=True):
         x = self.encode(x, checkpoint)
         return self.decode(x, checkpoint)
+
+
+class FlowmatchingHead(nn.Module):
+    def __init__(
+        self,
+        pixel_channels,
+        layer_blocks=(128, 2),
+        act_fn=torch.sin,
+    ):
+        super(FlowmatchingHead, self).__init__()
+        self.in_conv = nn.Conv2d(
+            pixel_channels, layer_blocks[0], kernel_size=1, stride=1, padding="same"
+        )
+
+        # residual blocks
+        res_blocks = nn.ModuleList()
+        for block in range(layer_blocks[1]):
+            resnet = SimpleResNetBlock(layer_blocks[0], layer_blocks[0], 3, 1, "same", act_fn)
+            res_blocks.append(resnet)
+        self.res_blocks = res_blocks
+
+        self.out_norm = SoftClamp(layer_blocks[0])
+        self.out_conv = nn.Conv2d(
+            layer_blocks[0],
+            pixel_channels,
+            kernel_size=1,
+            stride=1,
+            padding="same",
+        )
+
+        nn.init.zeros_(self.in_conv.bias)
+        nn.init.zeros_(self.out_conv.bias)
+
+    def forward(self, x, cond, checkpoint=True):
+        x = self.in_conv(x)
+
+        for resnet in self.res_blocks:
+            if checkpoint:
+                x = ckpt.checkpoint(resnet, x, cond)
+            else:
+                x = resnet(x, cond)
+
+        x = self.out_norm(x)
+        x = self.out_conv(x)
+
+        return x
+    
+
+class FlowmatchingAutoEncoder(nn.Module):
+    def __init__(
+        self,
+        pixel_channels=3,
+        bottleneck_channels=4,
+        up_layer_blocks=((32, 2), (64, 2), (128, 2)),
+        down_layer_blocks=((32, 2), (64, 2), (128, 2)),
+        flow_matching_head_block=(32, 2),
+        act_fn="sin",
+        **kwargs
+    ):
+        super(FlowmatchingAutoEncoder, self).__init__()
+
+        activation_functions = {
+            "relu": F.relu,
+            "leaky_relu": F.leaky_relu,
+            "sigmoid": F.sigmoid,
+            "tanh": F.tanh,
+            "elu": F.elu,
+            "selu": F.selu,
+            "gelu": F.gelu,
+            "silu": F.silu,
+            "sin": torch.sin,
+        }
+
+        self.encoder = Encoder(
+            pixel_channels,
+            bottleneck_channels,
+            down_layer_blocks,
+            activation_functions[act_fn],
+        )
+        self.decoder = Decoder(
+            bottleneck_channels,
+            pixel_channels,
+            up_layer_blocks,
+            activation_functions[act_fn],
+        )
+
+        # projection to match the activation channel size with the flow matching head
+        self.flowmatch_proj = nn.Conv2d(
+            up_layer_blocks[-1][0],
+            flow_matching_head_block[0],
+            kernel_size=1,
+            stride=1,
+            padding="same",
+        )
+        self.flow_matching_head = FlowmatchingHead(
+            pixel_channels,
+            flow_matching_head_block,
+            activation_functions[act_fn],            
+        )
+
+
+    # put this euler ODE solver as method here for now
+    @staticmethod
+    def denoise_cfg(
+        model,
+        timesteps: list[float],
+        img,
+        cond,
+        neg_cond=None,
+        cfg: float = 2.0,
+        first_n_steps_without_cfg: int = 0,
+    ):
+        # neg cond can be zero tensor 
+        if neg_cond is None:
+            neg_cond = torch.zeros_like(cond)
+        step_count = 0
+        for t_curr, t_prev in zip(timesteps[:-1], timesteps[1:]):
+            t_vec = torch.full((img.shape[0],), t_curr, dtype=img.dtype, device=img.device)
+            pred = model(
+                x=img,
+                guidance_logits=cond,
+            )
+            # disable cfg for x steps before using cfg
+            if step_count < first_n_steps_without_cfg or first_n_steps_without_cfg == -1:
+                img = img.to(pred) + (t_prev - t_curr) * pred
+            else:
+                pred_neg = model(
+                    x=img,
+                    guidance_logits=neg_cond, 
+                )
+
+                pred_cfg = pred_neg + (pred - pred_neg) * cfg
+
+                img = img + (t_prev - t_curr) * pred_cfg
+
+            step_count += 1
+
+        return img
+
+    @staticmethod
+    def create_distribution(num_points, device=None):
+        # Probability range on x axis
+        x = torch.linspace(0, 1, num_points, device=device)
+
+        # Custom probability density function
+        probabilities = -7.7 * ((x - 0.5) ** 2) + 2
+
+        # Normalize to sum to 1
+        probabilities /= probabilities.sum()
+
+        return x, probabilities
+
+    @staticmethod
+    def sample_from_distribution(x, probabilities, num_samples, device=None):
+        # Step 1: Compute the cumulative distribution function
+        cdf = torch.cumsum(probabilities, dim=0)
+
+        # Step 2: Generate uniform random samples
+        uniform_samples = torch.rand(num_samples, device=device)
+
+        # Step 3: Map uniform samples to the x values using the CDF
+        indices = torch.searchsorted(cdf, uniform_samples, right=True)
+
+        # Get the corresponding x values for the sampled indices
+        sampled_values = x[indices]
+
+        return sampled_values
+    
+    @staticmethod
+    def fm_target(noise, image):
+        return noise - image
+
+    def encode(self, x, checkpoint=True, skip_last_downscale=False):
+        return self.encoder(x, checkpoint, skip_last_downscale)
+
+    def decode(self, x, checkpoint=True, skip_second_upscale=False, logits_only=True):
+        # use logits only to guide flow matching head
+        return self.decoder(x, checkpoint, skip_second_upscale, logits_only)
+    
+    def flow_matching_decode(self, x, guidance_logits):
+        # x is noise and the prev activations act like a guidance embedding
+        # this returns image vectors for ODE process
+        guidance_logits = self.flowmatch_proj(guidance_logits)
+        return self.flow_matching_head(x, guidance_logits)
+
